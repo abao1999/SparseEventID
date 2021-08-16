@@ -117,6 +117,12 @@ class trainer(trainercore):
         self.init_network()
 
         n_trainable_parameters = 0
+
+        # If using half precision on the model, convert it now:
+        if self.args.run.precision == "bfloat16":
+            self._net = self._net.bfloat16()
+
+        # Print network info
         for var in self._net.parameters():
             n_trainable_parameters += numpy.prod(var.shape)
         logger.info("Total number of trainable parameters in this network: {}".format(n_trainable_parameters))
@@ -128,6 +134,19 @@ class trainer(trainercore):
         self.restore_model()
 
 
+        # If using half precision on the model, convert it now:
+        if self.args.run.precision == "bfloat16":
+            self._net = self._net.bfloat16()
+
+
+#        # For half precision, we disable gradient accumulation.  This is to allow
+#        # dynamic loss scaling
+#        if self.args.run.precision == "bfloat16":
+#            if self.args.gradient_accumulation > 1:
+#                raise Exception("Can not accumulate gradients in half precision.")
+
+
+        # Calculate Loss
         self._log_keys = ['loss']
         for key in self.larcv_fetcher.keyword_label:
             self._log_keys.append('acc/{}'.format(key))
@@ -157,6 +176,8 @@ class trainer(trainercore):
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self._opt, self.lr_calculator, last_epoch=-1)
 
 
+        if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+            self.scaler = torch.cuda.amp.GradScaler()
 
 
         device = self.get_device()
@@ -287,6 +308,9 @@ class trainer(trainercore):
             else:
                 minibatch_data[key] = torch.tensor(minibatch_data[key],device=device)
 
+        if self.args.run.precision == "bfloat16":
+            minibatch_data["image"] = minibatch_data["image"].bfloat16()
+
         return minibatch_data
 
     def train_step(self):
@@ -325,8 +349,8 @@ class trainer(trainercore):
 
         with torch_prof as prof:
             with record_function("model_training"):
-                # if mixed precision, and cuda, use autocast:
-                if self.args.run.precision == "mixed" and self.args.run.compute_mode == "GPU":
+                # if bfloat16 precision, and cuda, use autocast:
+                if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
                     with torch.cuda.amp.autocast():
                         logits = self._net(minibatch_data['image'])
                 else:
@@ -336,10 +360,10 @@ class trainer(trainercore):
                 loss = self._calculate_loss(minibatch_data, logits)
 
                 # Compute the gradients for the network parameters:
-                loss.backward()
-
-                first_param = next(self._net.parameters())
-
+                if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
                 # Compute any necessary metrics:
                 metrics = self._compute_metrics(logits, minibatch_data, loss)
@@ -364,7 +388,13 @@ class trainer(trainercore):
 
         step_start_time = datetime.datetime.now()
         # Apply the parameter update:
-        self._opt.step()
+
+        if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+            self.scaler.step(self._opt)
+            self.scaler.update()
+        else:
+            self._opt.step()
+
         self.lr_scheduler.step()
         global_end_time = datetime.datetime.now()
 
