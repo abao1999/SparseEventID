@@ -39,13 +39,20 @@ def knn(x, k):
     idx = pairwise_distance.topk(k=k, dim=-1)[1]   # (batch_size, num_points, k)
     return idx
 
+def knn_cdist(x, k):
+
+    pairwise_cdist = torch.cdist(x.transpose(2, 1), x.transpose(2, 1))
+
+    idx = pairwise_cdist.topk(k=k, dim=-1)[1]   # (batch_size, num_points, k)
+    return idx
 
 def get_graph_feature(x, k=20, idx=None):
     batch_size = x.size(0)
     num_points = x.size(2)
     x = x.view(batch_size, -1, num_points)
     if idx is None:
-        idx = knn(x, k=k)   # (batch_size, num_points, k)
+        # idx = knn(x, k=k)
+        idx = knn_cdist(x, k=k)   # (batch_size, num_points, k)
     device = torch.device('cuda')
 
     idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1)*num_points
@@ -80,7 +87,7 @@ class DGCNN(nn.Module):
         self.bn4 = nn.BatchNorm2d(256)
         self.bn5 = nn.BatchNorm1d(args.network.emb_dims)
 
-        self.conv1 = nn.Sequential(nn.Conv2d(6, 64, kernel_size=1, bias=False),
+        self.conv1 = nn.Sequential(nn.Conv2d(4*2, 64, kernel_size=1, bias=False),
                                    self.bn1,
                                    nn.LeakyReLU(negative_slope=0.2))
         self.conv2 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
@@ -120,10 +127,9 @@ class DGCNN(nn.Module):
 
         # go through each plane in the data (there are three of them)
 
-        print("input data shape: ", x.shape)
-
         batch_size = x.size(0)
         x = get_graph_feature(x, k=self.k)
+
         x = self.conv1(x)
         x1 = x.max(dim=-1, keepdim=False)[0]
 
@@ -152,7 +158,6 @@ class DGCNN(nn.Module):
         x = self.dp2(x)
         # set current data plane to be x after going through the network
 
-        print("data shape: ", x.shape)
         x = torch.reshape(x, x.shape + (1,))
         outputs = { key: torch.squeeze(self.linear3[key](x)) for key in self.linear3.keys() }
         return outputs
