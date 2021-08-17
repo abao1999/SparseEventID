@@ -139,11 +139,11 @@ class trainer(trainercore):
             self._net = self._net.bfloat16()
 
 
-#        # For half precision, we disable gradient accumulation.  This is to allow
-#        # dynamic loss scaling
-#        if self.args.run.precision == "bfloat16":
-#            if self.args.gradient_accumulation > 1:
-#                raise Exception("Can not accumulate gradients in half precision.")
+        # For half precision, we disable gradient accumulation.  This is to allow
+        # dynamic loss scaling
+        if self.args.run.precision == "mixed":
+            if self.args.mode.optimizer.gradient_accumulation > 1:
+                raise Exception("Can not accumulate gradients in half precision.")
 
 
         # Calculate Loss
@@ -176,7 +176,7 @@ class trainer(trainercore):
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self._opt, self.lr_calculator, last_epoch=-1)
 
 
-        if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+        if self.args.run.precision == "mixed" and self.args.run.compute_mode == "GPU":
             self.scaler = torch.cuda.amp.GradScaler()
 
 
@@ -349,8 +349,8 @@ class trainer(trainercore):
 
         with torch_prof as prof:
             with record_function("model_training"):
-                # if bfloat16 precision, and cuda, use autocast:
-                if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+                # if mixed precision, and cuda, use autocast:
+                if self.args.run.precision == "mixed" and self.args.run.compute_mode == "GPU":
                     with torch.cuda.amp.autocast():
                         logits = self._net(minibatch_data['image'])
                 else:
@@ -360,7 +360,7 @@ class trainer(trainercore):
                 loss = self._calculate_loss(minibatch_data, logits)
 
                 # Compute the gradients for the network parameters:
-                if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+                if self.args.run.precision == "mixed" and self.args.run.compute_mode == "GPU":
                     self.scaler.scale(loss).backward()
                 else:
                     loss.backward()
@@ -389,7 +389,7 @@ class trainer(trainercore):
         step_start_time = datetime.datetime.now()
         # Apply the parameter update:
 
-        if self.args.run.precision == "bfloat16" and self.args.run.compute_mode == "GPU":
+        if self.args.run.precision == "mixed" and self.args.run.compute_mode == "GPU":
             self.scaler.step(self._opt)
             self.scaler.update()
         else:
